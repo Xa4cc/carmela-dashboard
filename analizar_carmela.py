@@ -59,11 +59,15 @@ def promedio_por_dia_semana(fechas, min_fecha, max_fecha):
     return promedio_dow.round(1).to_dict(), dia_pico
 
 
-def metricas_ventana(paid, dias):
-    """Metricas del reporte mensual sobre los ultimos N dias."""
-    max_fecha = paid['fecha_dt'].dt.normalize().max()
+def metricas_ventana(paid, dias, offset_dias=0):
+    """Metricas del reporte mensual sobre los ultimos N dias.
+    offset_dias > 0 corre la ventana hacia atras (para comparar contra un
+    periodo anterior de la misma duracion)."""
+    max_fecha = paid['fecha_dt'].dt.normalize().max() - pd.Timedelta(days=offset_dias)
     min_fecha = max_fecha - pd.Timedelta(days=dias - 1)
-    ventana = paid[paid['fecha_dt'].dt.normalize() >= min_fecha].copy()
+    ventana = paid[
+        (paid['fecha_dt'].dt.normalize() >= min_fecha) & (paid['fecha_dt'].dt.normalize() <= max_fecha)
+    ].copy()
 
     pedidos_unicos = ventana.drop_duplicates('Número de orden')
     n_pedidos = len(pedidos_unicos)
@@ -162,10 +166,12 @@ def cargar_mercadolibre(path):
     return df
 
 
-def metricas_canal_ml(df_ml, dias):
-    max_fecha = df_ml['fecha_dt'].dt.normalize().max()
+def metricas_canal_ml(df_ml, dias, offset_dias=0):
+    max_fecha = df_ml['fecha_dt'].dt.normalize().max() - pd.Timedelta(days=offset_dias)
     min_fecha = max_fecha - pd.Timedelta(days=dias - 1)
-    ventana = df_ml[df_ml['fecha_dt'].dt.normalize() >= min_fecha]
+    ventana = df_ml[
+        (df_ml['fecha_dt'].dt.normalize() >= min_fecha) & (df_ml['fecha_dt'].dt.normalize() <= max_fecha)
+    ]
     bruto = ventana['Ingresos por productos (ARS)'].sum()
     neto = ventana['Total (ARS)'].sum()
     comision = -ventana['Cargo por venta'].fillna(0).sum()  # viene negativo en el archivo
@@ -184,17 +190,18 @@ def metricas_canal_ml(df_ml, dias):
     }
 
 
-def metricas_canal_tn(df_ventas, paid, dias):
+def metricas_canal_tn(df_ventas, paid, dias, offset_dias=0):
     pedidos_all = df_ventas.drop_duplicates('Número de orden').copy()
     pedidos_pagados = paid.drop_duplicates('Número de orden').copy()
-    max_fecha = pedidos_pagados['fecha_dt'].dt.normalize().max()
-    ventana = pedidos_pagados[pedidos_pagados['fecha_dt'].dt.normalize() >= max_fecha - pd.Timedelta(days=dias - 1)]
-    ventana_all = pedidos_all[pedidos_all['fecha_dt'].dt.normalize() >= max_fecha - pd.Timedelta(days=dias - 1)]
-    ventana_items = paid[paid['fecha_dt'].dt.normalize() >= max_fecha - pd.Timedelta(days=dias - 1)]
+    max_fecha = pedidos_pagados['fecha_dt'].dt.normalize().max() - pd.Timedelta(days=offset_dias)
+    min_fecha = max_fecha - pd.Timedelta(days=dias - 1)
+    en_rango = lambda s: (s.dt.normalize() >= min_fecha) & (s.dt.normalize() <= max_fecha)
+    ventana = pedidos_pagados[en_rango(pedidos_pagados['fecha_dt'])]
+    ventana_all = pedidos_all[en_rango(pedidos_all['fecha_dt'])]
+    ventana_items = paid[en_rango(paid['fecha_dt'])]
     bruto = ventana['Total'].sum()
     costo_proc = ventana['Costo de procesamiento'].fillna(0).sum()
     canceladas = (ventana_all['Estado de la orden'] == 'Cancelada').sum()
-    min_fecha = max_fecha - pd.Timedelta(days=dias - 1)
     promedio_dow, dia_pico = promedio_por_dia_semana(ventana['fecha_dt'], min_fecha, max_fecha)
     return {
         'pedidos': int(len(ventana)),
@@ -303,6 +310,89 @@ def chequeo_stock(paid, df_prod, dias=30):
     riesgo = riesgo.sort_values('dias_de_stock').head(10)
 
     return riesgo[['nombre_producto', 'stock_total', 'venta_diaria', 'dias_de_stock']].round(1).to_dict('records')
+
+
+STOP_WORDS_MODELO = {'de', 'color', 'tote', 'bag', 'cuero', 'la', 'el', 'y', 'con', 'en', 'a'}
+
+
+def _norm_modelo(s):
+    s = str(s).lower()
+    s = s.replace('maxibilletera', 'maxi billetera')  # arregla el nombre compuesto del archivo de costos
+    s = re.sub(r'[^a-záéíóúñ0-9\s]', ' ', s)
+    s = re.sub(r'\s+', ' ', s).strip()
+    return s
+
+
+def cargar_costos(path):
+    """Carga el archivo de costos por modelo (lo arma el dueño del negocio a mano,
+    formato libre: columnas de moneda como texto '$44,202.00')."""
+    df = pd.read_csv(path, sep=None, engine='python', encoding='latin-1')
+    for col in df.columns[1:]:
+        df[col] = (
+            df[col].astype(str).str.replace('$', '', regex=False)
+            .str.replace(',', '', regex=False).str.strip()
+        )
+        df[col] = pd.to_numeric(df[col], errors='coerce')
+    return df
+
+
+def asignar_modelos(df_ventas, costos):
+    """Para cada 'Nombre del producto', encuentra el 'Modelo' de costos cuyas
+    palabras esten TODAS contenidas en el nombre (y el mas especifico si hay
+    mas de un candidato, ej. 'Imperial Con cierre' antes que 'Imperial')."""
+    modelos_tokens = {m: (set(_norm_modelo(m).split()) - STOP_WORDS_MODELO) for m in costos['Modelo']}
+
+    def mejor_match(nombre):
+        if pd.isna(nombre):
+            return None
+        tokens_prod = set(_norm_modelo(nombre).split())
+        candidatos = [(len(tk), m) for m, tk in modelos_tokens.items() if tk and tk.issubset(tokens_prod)]
+        if not candidatos:
+            return None
+        candidatos.sort(reverse=True)
+        return candidatos[0][1]
+
+    return df_ventas['Nombre del producto'].apply(mejor_match)
+
+
+def metricas_margen(df_ventas, paid, costos, dias, offset_dias=0):
+    """Margen neto real de los ultimos N dias, usando el costo por modelo y
+    diferenciando ganancia por cuotas vs. transferencia (columnas que ya trae
+    el archivo de costos)."""
+    v = paid.copy()
+    v['modelo_asignado'] = asignar_modelos(v, costos)
+    v = v.merge(
+        costos[['Modelo', 'Ganancia Neta en 9 pagos', 'Ganancia neta pagando por tranfer']],
+        left_on='modelo_asignado', right_on='Modelo', how='left'
+    )
+    v['es_cuotas'] = v['cuotas_num'].fillna(0) >= 2
+    v['ganancia_unit'] = np.where(v['es_cuotas'], v['Ganancia Neta en 9 pagos'], v['Ganancia neta pagando por tranfer'])
+    v['ingreso_item'] = v['Cantidad del producto'] * v['Precio del producto']
+    v['ganancia_item'] = v['ganancia_unit'] * v['Cantidad del producto']
+
+    max_fecha = v['fecha_dt'].dt.normalize().max() - pd.Timedelta(days=offset_dias)
+    min_fecha = max_fecha - pd.Timedelta(days=dias - 1)
+    ventana = v[(v['fecha_dt'].dt.normalize() >= min_fecha) & (v['fecha_dt'].dt.normalize() <= max_fecha)]
+
+    con_costo = ventana[ventana['ganancia_unit'].notna()]
+    sin_costo = ventana[ventana['ganancia_unit'].isna()]
+
+    ingresos_totales = ventana['ingreso_item'].sum()
+    ingresos_con_costo = con_costo['ingreso_item'].sum()
+    ganancia = con_costo['ganancia_item'].sum()
+
+    sin_costo_top = (
+        sin_costo.groupby('Nombre del producto')['ingreso_item'].sum()
+        .sort_values(ascending=False).head(10).reset_index().to_dict('records')
+    )
+
+    return {
+        'cobertura_pct': round(100 * ingresos_con_costo / ingresos_totales, 1) if ingresos_totales else 0,
+        'ingresos_con_costo': round(ingresos_con_costo),
+        'ganancia_neta': round(ganancia),
+        'margen_pct': round(100 * ganancia / ingresos_con_costo, 1) if ingresos_con_costo else 0,
+        'productos_sin_costo': sin_costo_top,
+    }
 
 
 def main():
