@@ -44,6 +44,21 @@ def nombre_fill_productos(df_prod):
     return g
 
 
+DOW_MAP = {0: 'Lunes', 1: 'Martes', 2: 'Miércoles', 3: 'Jueves', 4: 'Viernes', 5: 'Sábado', 6: 'Domingo'}
+
+
+def promedio_por_dia_semana(fechas, min_fecha, max_fecha):
+    """Dado un Series de fechas (una por pedido/venta), calcula el promedio de
+    pedidos por dia de la semana corrigiendo por cuantas veces aparece cada
+    dia en la ventana (ej: si hay 5 sabados y solo 4 lunes)."""
+    conteo_dias = fechas.dt.dayofweek.value_counts()
+    todas_fechas = pd.date_range(min_fecha, max_fecha, freq='D')
+    ocurrencias = pd.Series([d.dayofweek for d in todas_fechas]).value_counts()
+    promedio_dow = (conteo_dias / ocurrencias).reindex(range(7)).rename(index=DOW_MAP)
+    dia_pico = promedio_dow.idxmax()
+    return promedio_dow.round(1).to_dict(), dia_pico
+
+
 def metricas_ventana(paid, dias):
     """Metricas del reporte mensual sobre los ultimos N dias."""
     max_fecha = paid['fecha_dt'].dt.normalize().max()
@@ -63,14 +78,7 @@ def metricas_ventana(paid, dias):
         .head(8)
     )
 
-    # dia de la semana, corregido por cantidad de ocurrencias de cada dia en la ventana
-    pedidos_unicos['dow'] = pedidos_unicos['fecha_dt'].dt.dayofweek
-    dow_map = {0: 'Lunes', 1: 'Martes', 2: 'Miércoles', 3: 'Jueves', 4: 'Viernes', 5: 'Sábado', 6: 'Domingo'}
-    conteo_dias = pedidos_unicos.groupby('dow').size()
-    todas_fechas = pd.date_range(min_fecha, max_fecha, freq='D')
-    ocurrencias = pd.Series([d.dayofweek for d in todas_fechas]).value_counts()
-    promedio_dow = (conteo_dias / ocurrencias).reindex(range(7)).rename(index=dow_map)
-    dia_pico = promedio_dow.idxmax()
+    promedio_dow, dia_pico = promedio_por_dia_semana(pedidos_unicos['fecha_dt'], min_fecha, max_fecha)
 
     # AMBA %
     amba_provincias = ['Buenos Aires', 'Capital Federal', 'Gran Buenos Aires']
@@ -82,7 +90,7 @@ def metricas_ventana(paid, dias):
         'pedidos': int(n_pedidos),
         'ticket_promedio': round(ticket_promedio),
         'top_productos': top_productos.reset_index().to_dict('records'),
-        'promedio_por_dia_semana': promedio_dow.round(1).to_dict(),
+        'promedio_por_dia_semana': promedio_dow,
         'dia_pico': dia_pico,
         'pct_amba': round(pct_amba, 1),
     }
@@ -156,11 +164,13 @@ def cargar_mercadolibre(path):
 
 def metricas_canal_ml(df_ml, dias):
     max_fecha = df_ml['fecha_dt'].dt.normalize().max()
-    ventana = df_ml[df_ml['fecha_dt'].dt.normalize() >= max_fecha - pd.Timedelta(days=dias - 1)]
+    min_fecha = max_fecha - pd.Timedelta(days=dias - 1)
+    ventana = df_ml[df_ml['fecha_dt'].dt.normalize() >= min_fecha]
     bruto = ventana['Ingresos por productos (ARS)'].sum()
     neto = ventana['Total (ARS)'].sum()
     comision = -ventana['Cargo por venta'].fillna(0).sum()  # viene negativo en el archivo
     canceladas = ventana['Estado'].astype(str).str.contains('Cancel', case=False, na=False).sum()
+    promedio_dow, dia_pico = promedio_por_dia_semana(ventana['fecha_dt'], min_fecha, max_fecha)
     return {
         'unidades': int(ventana['Unidades'].sum()),
         'pedidos': int(len(ventana)),
@@ -169,6 +179,8 @@ def metricas_canal_ml(df_ml, dias):
         'comision_total': round(comision),
         'pct_comision': round(100 * comision / bruto, 1) if bruto else 0,
         'pct_cancelacion': round(100 * canceladas / len(ventana), 1) if len(ventana) else 0,
+        'promedio_por_dia_semana': promedio_dow,
+        'dia_pico': dia_pico,
     }
 
 
@@ -182,6 +194,8 @@ def metricas_canal_tn(df_ventas, paid, dias):
     bruto = ventana['Total'].sum()
     costo_proc = ventana['Costo de procesamiento'].fillna(0).sum()
     canceladas = (ventana_all['Estado de la orden'] == 'Cancelada').sum()
+    min_fecha = max_fecha - pd.Timedelta(days=dias - 1)
+    promedio_dow, dia_pico = promedio_por_dia_semana(ventana['fecha_dt'], min_fecha, max_fecha)
     return {
         'pedidos': int(len(ventana)),
         'unidades': int(ventana_items['Cantidad del producto'].sum()),
@@ -190,6 +204,8 @@ def metricas_canal_tn(df_ventas, paid, dias):
         'comision_total': round(costo_proc),
         'pct_comision': round(100 * costo_proc / bruto, 1) if bruto else 0,
         'pct_cancelacion': round(100 * canceladas / len(ventana_all), 1) if len(ventana_all) else 0,
+        'promedio_por_dia_semana': promedio_dow,
+        'dia_pico': dia_pico,
     }
 
 
