@@ -327,6 +327,7 @@ def cargar_costos(path):
     """Carga el archivo de costos por modelo (lo arma el dueño del negocio a mano,
     formato libre: columnas de moneda como texto '$44,202.00')."""
     df = pd.read_csv(path, sep=None, engine='python', encoding='latin-1')
+    df['Modelo'] = df['Modelo'].astype(str).str.replace('\xa0', ' ', regex=False).str.strip()
     for col in df.columns[1:]:
         df[col] = (
             df[col].astype(str).str.replace('$', '', regex=False)
@@ -392,6 +393,63 @@ def metricas_margen(df_ventas, paid, costos, dias, offset_dias=0):
         'ganancia_neta': round(ganancia),
         'margen_pct': round(100 * ganancia / ingresos_con_costo, 1) if ingresos_con_costo else 0,
         'productos_sin_costo': sin_costo_top,
+    }
+
+
+def forecast_reposicion(df_ventas, paid, df_prod, costos, dias, df_ml=None):
+    """Demanda combinada (Tiendanube + Mercado Libre, si esta disponible) por
+    Modelo en los ultimos N dias, cruzada contra el stock actual (Tiendanube).
+    Devuelve el ranking con nivel de alerta para saber a que modelo priorizar
+    la reposicion."""
+    max_fecha = paid['fecha_dt'].dt.normalize().max()
+    min_fecha = max_fecha - pd.Timedelta(days=dias - 1)
+
+    # demanda en Tiendanube, por modelo
+    v_tn = paid[(paid['fecha_dt'].dt.normalize() >= min_fecha) & (paid['fecha_dt'].dt.normalize() <= max_fecha)].copy()
+    v_tn['modelo_asignado'] = asignar_modelos(v_tn, costos)
+    demanda_tn = v_tn.groupby('modelo_asignado')['Cantidad del producto'].sum()
+
+    # demanda en Mercado Libre, por modelo (si hay archivo)
+    demanda_ml = pd.Series(dtype=float)
+    cobertura_ml = None
+    if df_ml is not None:
+        v_ml = df_ml[
+            (df_ml['fecha_dt'].dt.normalize() >= min_fecha) & (df_ml['fecha_dt'].dt.normalize() <= max_fecha)
+        ].copy()
+        v_ml_renombrado = v_ml.rename(columns={'Título de la publicación': 'Nombre del producto'})
+        v_ml['modelo_asignado'] = asignar_modelos(v_ml_renombrado, costos)
+        cobertura_ml = round(100 * v_ml['modelo_asignado'].notna().sum() / len(v_ml), 1) if len(v_ml) else 0
+        demanda_ml = v_ml.groupby('modelo_asignado')['Unidades'].sum()
+
+    demanda_total = demanda_tn.add(demanda_ml, fill_value=0)
+
+    # stock actual (Tiendanube), por modelo
+    prod = nombre_fill_productos(df_prod)
+    prod_renombrado = prod.rename(columns={'nombre_producto': 'Nombre del producto'})
+    prod['modelo_asignado'] = asignar_modelos(prod_renombrado, costos)
+    stock_modelo = prod.groupby('modelo_asignado')['stock_total'].sum()
+
+    tabla = pd.DataFrame({'unidades_30d': demanda_total}).join(stock_modelo.rename('stock_actual'), how='outer').fillna(0)
+    tabla = tabla[tabla.index.notna()]
+    tabla['venta_diaria'] = tabla['unidades_30d'] / dias
+    tabla['dias_de_stock'] = np.where(tabla['venta_diaria'] > 0, tabla['stock_actual'] / tabla['venta_diaria'], np.inf)
+
+    def nivel(row):
+        if row['venta_diaria'] == 0:
+            return '⚪ sin demanda' if row['stock_actual'] > 0 else '—'
+        if row['dias_de_stock'] < 7:
+            return '🔴 urgente'
+        if row['dias_de_stock'] < 15:
+            return '🟠 atención'
+        return '🟢 ok'
+
+    tabla['alerta'] = tabla.apply(nivel, axis=1)
+    tabla = tabla.sort_values('dias_de_stock')
+    tabla['dias_de_stock'] = tabla['dias_de_stock'].replace(np.inf, None)
+
+    return {
+        'tabla': tabla.reset_index().rename(columns={'index': 'Modelo'}).round(1).to_dict('records'),
+        'cobertura_ml_pct': cobertura_ml,
     }
 
 
