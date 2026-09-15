@@ -121,8 +121,21 @@ tab_resumen, tab_tendencia, tab_productos, tab_canales, tab_hallazgos = st.tabs(
 )
 
 with tab_resumen:
+    if canal_ml is not None:
+        st.subheader("Negocio total (Tiendanube + Mercado Libre)")
+        t1, t2, t3, t4 = st.columns(4)
+        total_pedidos = canal_tn['pedidos'] + canal_ml['pedidos']
+        total_bruto = canal_tn['ingresos_brutos'] + canal_ml['ingresos_brutos']
+        total_neto = canal_tn['ingresos_netos'] + canal_ml['ingresos_netos']
+        t1.metric("Pedidos totales", total_pedidos)
+        t2.metric("Unidades vendidas", canal_tn['unidades'] + canal_ml['unidades'])
+        t3.metric("Ingresos brutos", f"${total_bruto:,.0f}")
+        t4.metric("Ingresos netos", f"${total_neto:,.0f}")
+        st.caption("Las métricas de abajo (día pico, % AMBA, etc.) son específicas de Tiendanube — ver la pestaña Canales para el detalle por plataforma.")
+        st.divider()
+
     c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Pedidos", ventana['pedidos'])
+    c1.metric("Pedidos (Tiendanube)", ventana['pedidos'])
     c2.metric("Ticket promedio", f"${ventana['ticket_promedio']:,.0f}")
     c3.metric("Día más fuerte", ventana['dia_pico'])
     c4.metric("% AMBA", f"{ventana['pct_amba']}%")
