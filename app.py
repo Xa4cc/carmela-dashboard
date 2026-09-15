@@ -121,6 +121,16 @@ tab_resumen, tab_tendencia, tab_productos, tab_canales, tab_hallazgos = st.tabs(
 )
 
 with tab_resumen:
+    orden_dias = ['Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado', 'Domingo']
+
+    def dow_chart_df(promedio_dict):
+        d = pd.DataFrame({
+            'día': list(promedio_dict.keys()),
+            'pedidos_promedio': list(promedio_dict.values()),
+        })
+        d['día'] = pd.Categorical(d['día'], categories=orden_dias, ordered=True)
+        return d.sort_values('día').set_index('día')
+
     if canal_ml is not None:
         st.subheader("Negocio total (Tiendanube + Mercado Libre)")
         t1, t2, t3, t4 = st.columns(4)
@@ -131,26 +141,38 @@ with tab_resumen:
         t2.metric("Unidades vendidas", canal_tn['unidades'] + canal_ml['unidades'])
         t3.metric("Ingresos brutos", f"${total_bruto:,.0f}")
         t4.metric("Ingresos netos", f"${total_neto:,.0f}")
-        st.caption("Las métricas de abajo (día pico, % AMBA, etc.) son específicas de Tiendanube — ver la pestaña Canales para el detalle por plataforma.")
         st.divider()
 
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Pedidos (Tiendanube)", ventana['pedidos'])
-    c2.metric("Ticket promedio", f"${ventana['ticket_promedio']:,.0f}")
-    c3.metric("Día más fuerte", ventana['dia_pico'])
-    c4.metric("% AMBA", f"{ventana['pct_amba']}%")
+        col_tn, col_ml = st.columns(2)
+        with col_tn:
+            st.markdown("#### 🛒 Tiendanube")
+            st.metric("Pedidos", ventana['pedidos'])
+            st.metric("Ticket promedio", f"${ventana['ticket_promedio']:,.0f}")
+            st.metric("Día más fuerte", ventana['dia_pico'])
+            st.metric("% AMBA", f"{ventana['pct_amba']}%")
+            st.caption("Pedidos por día")
+            st.bar_chart(dow_chart_df(canal_tn['promedio_por_dia_semana']))
+        with col_ml:
+            st.markdown("#### 🟡 Mercado Libre")
+            st.metric("Pedidos", canal_ml['pedidos'])
+            st.metric("Ticket promedio", f"${round(canal_ml['ingresos_brutos']/canal_ml['pedidos']):,.0f}" if canal_ml['pedidos'] else "—")
+            st.metric("Día más fuerte", canal_ml['dia_pico'])
+            st.metric("% cancelación", f"{canal_ml['pct_cancelacion']}%")
+            st.caption("Pedidos por día")
+            st.bar_chart(dow_chart_df(canal_ml['promedio_por_dia_semana']))
 
-    st.subheader("Pedidos por día de la semana")
-    orden_dias = ['Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado', 'Domingo']
-    dow_df = pd.DataFrame({
-        'día': list(ventana['promedio_por_dia_semana'].keys()),
-        'pedidos_promedio': list(ventana['promedio_por_dia_semana'].values()),
-    })
-    dow_df['día'] = pd.Categorical(dow_df['día'], categories=orden_dias, ordered=True)
-    dow_df = dow_df.sort_values('día').set_index('día')
-    st.bar_chart(dow_df)
+    else:
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Pedidos (Tiendanube)", ventana['pedidos'])
+        c2.metric("Ticket promedio", f"${ventana['ticket_promedio']:,.0f}")
+        c3.metric("Día más fuerte", ventana['dia_pico'])
+        c4.metric("% AMBA", f"{ventana['pct_amba']}%")
+        st.subheader("Pedidos por día de la semana")
+        st.bar_chart(dow_chart_df(ventana['promedio_por_dia_semana']))
+        st.caption("Subí el archivo de Mercado Libre arriba para ver el desglose por canal.")
 
-    st.subheader("Riesgo de quiebre de stock")
+    st.divider()
+    st.subheader("Riesgo de quiebre de stock (Tiendanube)")
     if riesgo:
         st.dataframe(pd.DataFrame(riesgo), use_container_width=True)
     else:
