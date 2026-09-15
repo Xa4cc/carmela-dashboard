@@ -178,11 +178,13 @@ def metricas_canal_tn(df_ventas, paid, dias):
     max_fecha = pedidos_pagados['fecha_dt'].dt.normalize().max()
     ventana = pedidos_pagados[pedidos_pagados['fecha_dt'].dt.normalize() >= max_fecha - pd.Timedelta(days=dias - 1)]
     ventana_all = pedidos_all[pedidos_all['fecha_dt'].dt.normalize() >= max_fecha - pd.Timedelta(days=dias - 1)]
+    ventana_items = paid[paid['fecha_dt'].dt.normalize() >= max_fecha - pd.Timedelta(days=dias - 1)]
     bruto = ventana['Total'].sum()
     costo_proc = ventana['Costo de procesamiento'].fillna(0).sum()
     canceladas = (ventana_all['Estado de la orden'] == 'Cancelada').sum()
     return {
         'pedidos': int(len(ventana)),
+        'unidades': int(ventana_items['Cantidad del producto'].sum()),
         'ingresos_brutos': round(bruto),
         'ingresos_netos': round(bruto - costo_proc),
         'comision_total': round(costo_proc),
