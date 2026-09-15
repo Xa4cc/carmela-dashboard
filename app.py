@@ -20,6 +20,7 @@ import streamlit as st
 from analizar_carmela import (
     cargar_ventas,
     cargar_productos,
+    cargar_mercadolibre,
     metricas_ventana,
     metricas_historicas,
     chequeo_stock,
@@ -28,6 +29,8 @@ from analizar_carmela import (
     cancelaciones_por_medio_pago,
     cancelaciones_por_provincia,
     stock_nunca_vendido,
+    metricas_canal_tn,
+    metricas_canal_ml,
 )
 
 HISTORIAL_PATH = "historial_cortes.csv"
@@ -73,16 +76,18 @@ st.title("👜 Dashboard Carmela Güemes")
 st.caption("Etapa 1: corre local, todavía subís los CSV a mano — sin conexión a la API todavía.")
 
 # ---------- Carga de archivos ----------
-col1, col2 = st.columns(2)
+col1, col2, col3 = st.columns(3)
 with col1:
-    archivo_ventas = st.file_uploader("Export de ventas (CSV)", type="csv")
+    archivo_ventas = st.file_uploader("Export de ventas Tiendanube (CSV)", type="csv")
 with col2:
-    archivo_productos = st.file_uploader("Export de productos (CSV)", type="csv")
+    archivo_productos = st.file_uploader("Export de productos Tiendanube (CSV)", type="csv")
+with col3:
+    archivo_ml = st.file_uploader("Export de ventas Mercado Libre (Excel, opcional)", type="xlsx")
 
 dias_ventana = st.sidebar.slider("Ventana de días para el corte", min_value=7, max_value=90, value=30, step=1)
 
 if not archivo_ventas or not archivo_productos:
-    st.info("Subí los dos archivos para ver el análisis.")
+    st.info("Subí los dos archivos de Tiendanube para ver el análisis. El de Mercado Libre es opcional.")
     st.stop()
 
 # ---------- Procesamiento ----------
@@ -101,9 +106,18 @@ cancel_medio_pago = cancelaciones_por_medio_pago(df_ventas)
 cancel_provincia = cancelaciones_por_provincia(df_ventas)
 stock_muerto = stock_nunca_vendido(paid, df_productos)
 
+canal_ml = None
+if archivo_ml:
+    try:
+        df_ml = cargar_mercadolibre(archivo_ml)
+        canal_ml = metricas_canal_ml(df_ml, dias_ventana)
+    except Exception as e:
+        st.warning(f"No se pudo leer el archivo de Mercado Libre: {e}")
+canal_tn = metricas_canal_tn(df_ventas, paid, dias_ventana)
+
 # ---------- Tabs ----------
-tab_resumen, tab_tendencia, tab_productos, tab_hallazgos = st.tabs(
-    ["📊 Resumen del mes", "📈 Tendencia", "🛍️ Productos", "🔍 Hallazgos clave"]
+tab_resumen, tab_tendencia, tab_productos, tab_canales, tab_hallazgos = st.tabs(
+    ["📊 Resumen del mes", "📈 Tendencia", "🛍️ Productos", "🔀 Canales", "🔍 Hallazgos clave"]
 )
 
 with tab_resumen:
@@ -181,6 +195,45 @@ with tab_productos:
     st.subheader("Segmentación por método de pago (histórico completo)")
     cuotas_df = pd.DataFrame(historico['segmentacion_cuotas']).T
     st.dataframe(cuotas_df, use_container_width=True)
+
+with tab_canales:
+    if canal_ml is None:
+        st.info("Subí el export de Mercado Libre arriba para ver la comparación de canales.")
+    else:
+        tabla_canales = pd.DataFrame({
+            'Tiendanube': {
+                'Pedidos': canal_tn['pedidos'],
+                'Ingresos brutos': canal_tn['ingresos_brutos'],
+                'Ingresos netos': canal_tn['ingresos_netos'],
+                'Comisión/costo total': canal_tn['comision_total'],
+                '% que se lleva la plataforma': canal_tn['pct_comision'],
+                '% cancelación': canal_tn['pct_cancelacion'],
+            },
+            'Mercado Libre': {
+                'Pedidos': canal_ml['pedidos'],
+                'Ingresos brutos': canal_ml['ingresos_brutos'],
+                'Ingresos netos': canal_ml['ingresos_netos'],
+                'Comisión/costo total': canal_ml['comision_total'],
+                '% que se lleva la plataforma': canal_ml['pct_comision'],
+                '% cancelación': canal_ml['pct_cancelacion'],
+            },
+        })
+        st.dataframe(tabla_canales, use_container_width=True)
+
+        total_bruto = canal_tn['ingresos_brutos'] + canal_ml['ingresos_brutos']
+        c1, c2, c3 = st.columns(3)
+        c1.metric("% del negocio (bruto) que es Mercado Libre",
+                   f"{round(100*canal_ml['ingresos_brutos']/total_bruto,1)}%")
+        c2.metric("Diferencia de comisión (Mercado Libre vs Tiendanube)",
+                   f"{round(canal_ml['pct_comision'] - canal_tn['pct_comision'],1)} pp")
+        c3.metric("Plata que se lleva Mercado Libre este período",
+                   f"${canal_ml['comision_total']:,.0f}")
+
+        st.caption(
+            "Ingresos brutos = lo que paga el cliente. Ingresos netos = lo que "
+            "efectivamente queda después de comisiones/costos de cada plataforma "
+            "(no incluye costo de mercadería, que depende de que se cargue el costo por producto)."
+        )
 
 with tab_hallazgos:
     c1, c2 = st.columns(2)
