@@ -10,6 +10,7 @@ Uso:
 """
 import sys
 import json
+import re
 import argparse
 import pandas as pd
 import numpy as np
@@ -120,6 +121,73 @@ def metricas_historicas(paid):
         'total_clientes': int(len(por_cliente)),
         'pct_recurrentes': round(pct_recurrentes, 1),
         'segmentacion_cuotas': resumen_cuotas,
+    }
+
+
+MESES_ES = {
+    'enero': 1, 'febrero': 2, 'marzo': 3, 'abril': 4, 'mayo': 5, 'junio': 6,
+    'julio': 7, 'agosto': 8, 'septiembre': 9, 'octubre': 10, 'noviembre': 11, 'diciembre': 12,
+}
+
+
+def _parse_fecha_ml(texto):
+    """Convierte '1 de abril de 2026 15:35 hs.' a Timestamp."""
+    m = re.match(r'(\d+) de (\w+) de (\d+)', str(texto))
+    if not m:
+        return pd.NaT
+    dia, mes, anio = m.groups()
+    mes_num = MESES_ES.get(mes.lower())
+    if mes_num is None:
+        return pd.NaT
+    return pd.Timestamp(year=int(anio), month=mes_num, day=int(dia))
+
+
+def cargar_mercadolibre(path):
+    """Carga el export de 'Ventas AR' de Mercado Libre. El archivo trae un
+    bloque de texto introductorio antes del header real (fila 6)."""
+    df = pd.read_excel(path, sheet_name='Ventas AR', header=5)
+    df['fecha_dt'] = df['Fecha de venta'].apply(_parse_fecha_ml)
+    for col in ['Ingresos por productos (ARS)', 'Cargo por venta', 'Costo fijo',
+                'Costo por ofrecer cuotas', 'Total (ARS)']:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors='coerce')
+    return df
+
+
+def metricas_canal_ml(df_ml, dias):
+    max_fecha = df_ml['fecha_dt'].dt.normalize().max()
+    ventana = df_ml[df_ml['fecha_dt'].dt.normalize() >= max_fecha - pd.Timedelta(days=dias - 1)]
+    bruto = ventana['Ingresos por productos (ARS)'].sum()
+    neto = ventana['Total (ARS)'].sum()
+    comision = -ventana['Cargo por venta'].fillna(0).sum()  # viene negativo en el archivo
+    canceladas = ventana['Estado'].astype(str).str.contains('Cancel', case=False, na=False).sum()
+    return {
+        'unidades': int(ventana['Unidades'].sum()),
+        'pedidos': int(len(ventana)),
+        'ingresos_brutos': round(bruto),
+        'ingresos_netos': round(neto),
+        'comision_total': round(comision),
+        'pct_comision': round(100 * comision / bruto, 1) if bruto else 0,
+        'pct_cancelacion': round(100 * canceladas / len(ventana), 1) if len(ventana) else 0,
+    }
+
+
+def metricas_canal_tn(df_ventas, paid, dias):
+    pedidos_all = df_ventas.drop_duplicates('Número de orden').copy()
+    pedidos_pagados = paid.drop_duplicates('Número de orden').copy()
+    max_fecha = pedidos_pagados['fecha_dt'].dt.normalize().max()
+    ventana = pedidos_pagados[pedidos_pagados['fecha_dt'].dt.normalize() >= max_fecha - pd.Timedelta(days=dias - 1)]
+    ventana_all = pedidos_all[pedidos_all['fecha_dt'].dt.normalize() >= max_fecha - pd.Timedelta(days=dias - 1)]
+    bruto = ventana['Total'].sum()
+    costo_proc = ventana['Costo de procesamiento'].fillna(0).sum()
+    canceladas = (ventana_all['Estado de la orden'] == 'Cancelada').sum()
+    return {
+        'pedidos': int(len(ventana)),
+        'ingresos_brutos': round(bruto),
+        'ingresos_netos': round(bruto - costo_proc),
+        'comision_total': round(costo_proc),
+        'pct_comision': round(100 * costo_proc / bruto, 1) if bruto else 0,
+        'pct_cancelacion': round(100 * canceladas / len(ventana_all), 1) if len(ventana_all) else 0,
     }
 
 
