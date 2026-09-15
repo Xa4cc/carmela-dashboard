@@ -34,6 +34,41 @@ HISTORIAL_PATH = "historial_cortes.csv"
 
 st.set_page_config(page_title="Dashboard Carmela Güemes", page_icon="👜", layout="wide")
 
+
+def chequear_password():
+    """Muestra un campo de contraseña y frena la app hasta que sea correcta.
+    La contraseña real vive en Secrets (nunca en el código), asi que no queda
+    expuesta aunque el repo de GitHub sea público."""
+    if st.session_state.get("autenticado"):
+        return True
+
+    st.title("👜 Dashboard Carmela Güemes")
+    st.caption("Ingresá la contraseña para ver el dashboard.")
+    clave = st.text_input("Contraseña", type="password")
+
+    if not clave:
+        st.stop()
+
+    esperada = st.secrets.get("password")
+    if esperada is None:
+        st.error(
+            "No hay contraseña configurada todavía. Creá un archivo "
+            "`.streamlit/secrets.toml` local con `password = \"tu-clave\"` "
+            "(para probar en tu compu), y agregá el mismo valor en "
+            "Settings → Secrets de la app en Streamlit Cloud (para el link público)."
+        )
+        st.stop()
+
+    if clave == esperada:
+        st.session_state["autenticado"] = True
+        st.rerun()
+    else:
+        st.error("Contraseña incorrecta.")
+        st.stop()
+
+
+chequear_password()
+
 st.title("👜 Dashboard Carmela Güemes")
 st.caption("Etapa 1: corre local, todavía subís los CSV a mano — sin conexión a la API todavía.")
 
