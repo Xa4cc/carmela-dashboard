@@ -33,6 +33,7 @@ from analizar_carmela import (
     metricas_canal_tn,
     metricas_canal_ml,
     metricas_margen,
+    forecast_reposicion,
 )
 
 HISTORIAL_PATH = "historial_cortes.csv"
@@ -131,6 +132,16 @@ if archivo_costos:
     except Exception as e:
         st.warning(f"No se pudo leer el archivo de costos: {e}")
 
+forecast = None
+if archivo_costos:
+    try:
+        forecast = forecast_reposicion(
+            df_ventas, paid, df_productos, costos, dias_ventana,
+            df_ml=df_ml if archivo_ml else None,
+        )
+    except Exception as e:
+        st.warning(f"No se pudo calcular el forecast: {e}")
+
 
 def delta_pct(actual, anterior):
     """Delta % para pasarle a st.metric (compara valores absolutos, ej. plata o pedidos)."""
@@ -144,8 +155,8 @@ def delta_pp(actual, anterior):
     return f"{actual-anterior:+.1f} pp"
 
 # ---------- Tabs ----------
-tab_resumen, tab_tendencia, tab_productos, tab_canales, tab_margen, tab_hallazgos = st.tabs(
-    ["📊 Resumen del mes", "📈 Tendencia", "🛍️ Productos", "🔀 Canales", "💰 Margen", "🔍 Hallazgos clave"]
+tab_resumen, tab_tendencia, tab_productos, tab_canales, tab_margen, tab_forecast, tab_hallazgos = st.tabs(
+    ["📊 Resumen del mes", "📈 Tendencia", "🛍️ Productos", "🔀 Canales", "💰 Margen", "🔮 Forecast", "🔍 Hallazgos clave"]
 )
 
 with tab_resumen:
@@ -327,6 +338,44 @@ with tab_margen:
             st.dataframe(pd.DataFrame(margen['productos_sin_costo']).rename(
                 columns={'Nombre del producto': 'Producto', 'ingreso_item': 'Ingresos sin costear'}
             ), use_container_width=True)
+
+with tab_forecast:
+    if forecast is None:
+        st.info("Subí el archivo de costos por modelo arriba (es el que trae la lista de Modelos) para ver el forecast de reposición.")
+    else:
+        if forecast['cobertura_ml_pct'] is not None:
+            st.caption(f"Demanda combinada Tiendanube + Mercado Libre. Cobertura del emparejamiento en Mercado Libre: {forecast['cobertura_ml_pct']}%.")
+        else:
+            st.caption("Demanda de Tiendanube solamente — subí el archivo de Mercado Libre arriba para combinar ambos canales.")
+
+        tabla_fc = pd.DataFrame(forecast['tabla'])
+        n_urgente = (tabla_fc['alerta'] == '🔴 urgente').sum()
+        n_atencion = (tabla_fc['alerta'] == '🟠 atención').sum()
+
+        f1, f2 = st.columns(2)
+        f1.metric("🔴 Modelos en nivel urgente", n_urgente)
+        f2.metric("🟠 Modelos en nivel atención", n_atencion)
+
+        st.subheader("Top 10 modelos por demanda (últimos 30 días)")
+        top10 = tabla_fc.sort_values('unidades_30d', ascending=False).head(10)
+        st.bar_chart(top10.set_index('modelo_asignado')['unidades_30d'])
+        promedio_top10 = round(top10['unidades_30d'].mean(), 1)
+        st.caption(f"Promedio de unidades vendidas (30 días) de los 10 modelos más fuertes: {promedio_top10} — referencia para calcular cuánto cuero pedir.")
+
+        st.subheader("Ranking completo de reposición")
+        st.dataframe(
+            tabla_fc.rename(columns={
+                'modelo_asignado': 'Modelo', 'unidades_30d': 'Unidades (30d)',
+                'stock_actual': 'Stock actual', 'venta_diaria': 'Venta diaria',
+                'dias_de_stock': 'Días de stock', 'alerta': 'Alerta',
+            }),
+            use_container_width=True, hide_index=True,
+        )
+        st.caption(
+            "🔴 urgente: menos de 7 días de stock al ritmo actual. 🟠 atención: entre 7 y 15 días. "
+            "🟢 ok: 15+ días. ⚪ sin demanda: no vendió en la ventana pero tiene stock parado. "
+            "El stock es de Tiendanube (Mercado Libre no informa stock propio en el export)."
+        )
 
 with tab_hallazgos:
     c1, c2 = st.columns(2)
