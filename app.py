@@ -1,0 +1,183 @@
+"""
+Dashboard Carmela Guemes - app de Streamlit (Etapa 1)
+-------------------------------------------------------
+Corre localmente. Sube los CSV de ventas y productos a mano,
+la app hace el mismo analisis que analizar_carmela.py pero con
+graficos interactivos en vez de un JSON.
+
+Como correrla:
+    pip install streamlit pandas numpy
+    streamlit run app.py
+
+Etapa 2 (siguiente paso, no incluido aca): desplegar esto en
+share.streamlit.io conectando un repo de GitHub, para tener un
+link publico en vez de correrlo en tu compu.
+"""
+import os
+import pandas as pd
+import streamlit as st
+
+from analizar_carmela import (
+    cargar_ventas,
+    cargar_productos,
+    metricas_ventana,
+    metricas_historicas,
+    chequeo_stock,
+    recurrencia_del_periodo,
+    dias_hasta_segunda_compra,
+    cancelaciones_por_medio_pago,
+    cancelaciones_por_provincia,
+    stock_nunca_vendido,
+)
+
+HISTORIAL_PATH = "historial_cortes.csv"
+
+st.set_page_config(page_title="Dashboard Carmela Güemes", page_icon="👜", layout="wide")
+
+st.title("👜 Dashboard Carmela Güemes")
+st.caption("Etapa 1: corre local, todavía subís los CSV a mano — sin conexión a la API todavía.")
+
+# ---------- Carga de archivos ----------
+col1, col2 = st.columns(2)
+with col1:
+    archivo_ventas = st.file_uploader("Export de ventas (CSV)", type="csv")
+with col2:
+    archivo_productos = st.file_uploader("Export de productos (CSV)", type="csv")
+
+dias_ventana = st.sidebar.slider("Ventana de días para el corte", min_value=7, max_value=90, value=30, step=1)
+
+if not archivo_ventas or not archivo_productos:
+    st.info("Subí los dos archivos para ver el análisis.")
+    st.stop()
+
+# ---------- Procesamiento ----------
+# cargar_ventas/cargar_productos esperan una ruta de archivo; los uploads de
+# Streamlit son objetos en memoria, pandas los acepta igual sin problema.
+df_ventas = cargar_ventas(archivo_ventas)
+df_productos = cargar_productos(archivo_productos)
+paid = df_ventas[df_ventas['Estado del pago'] == 'Recibido'].copy()
+
+ventana = metricas_ventana(paid, dias_ventana)
+historico = metricas_historicas(paid)
+riesgo = chequeo_stock(paid, df_productos, dias_ventana)
+recurrencia_periodo = recurrencia_del_periodo(paid, dias_ventana)
+dias_2da_compra = dias_hasta_segunda_compra(paid)
+cancel_medio_pago = cancelaciones_por_medio_pago(df_ventas)
+cancel_provincia = cancelaciones_por_provincia(df_ventas)
+stock_muerto = stock_nunca_vendido(paid, df_productos)
+
+# ---------- Tabs ----------
+tab_resumen, tab_tendencia, tab_productos, tab_hallazgos = st.tabs(
+    ["📊 Resumen del mes", "📈 Tendencia", "🛍️ Productos", "🔍 Hallazgos clave"]
+)
+
+with tab_resumen:
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Pedidos", ventana['pedidos'])
+    c2.metric("Ticket promedio", f"${ventana['ticket_promedio']:,.0f}")
+    c3.metric("Día más fuerte", ventana['dia_pico'])
+    c4.metric("% AMBA", f"{ventana['pct_amba']}%")
+
+    st.subheader("Pedidos por día de la semana")
+    orden_dias = ['Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado', 'Domingo']
+    dow_df = pd.DataFrame({
+        'día': list(ventana['promedio_por_dia_semana'].keys()),
+        'pedidos_promedio': list(ventana['promedio_por_dia_semana'].values()),
+    })
+    dow_df['día'] = pd.Categorical(dow_df['día'], categories=orden_dias, ordered=True)
+    dow_df = dow_df.sort_values('día').set_index('día')
+    st.bar_chart(dow_df)
+
+    st.subheader("Riesgo de quiebre de stock")
+    if riesgo:
+        st.dataframe(pd.DataFrame(riesgo), use_container_width=True)
+    else:
+        st.write("No hay productos con stock bajo y venta activa en esta ventana.")
+
+with tab_tendencia:
+    st.subheader("Historial de cortes")
+    nueva_fila = pd.DataFrame([{
+        'fecha_corte': ventana['fecha_corte'],
+        'rango': ventana['rango'],
+        'pedidos': ventana['pedidos'],
+        'ticket_promedio': ventana['ticket_promedio'],
+        'pct_recurrencia_periodo': recurrencia_periodo,
+        'pct_amba': ventana['pct_amba'],
+    }])
+
+    if os.path.exists(HISTORIAL_PATH):
+        historial_df = pd.read_csv(HISTORIAL_PATH)
+    else:
+        historial_df = pd.DataFrame(columns=nueva_fila.columns)
+
+    st.dataframe(historial_df, use_container_width=True)
+
+    if st.button("💾 Guardar este corte al historial"):
+        historial_df = pd.concat([historial_df, nueva_fila], ignore_index=True)
+        historial_df.to_csv(HISTORIAL_PATH, index=False)
+        st.success("Corte guardado. Recargá la página para verlo reflejado en los gráficos de abajo.")
+
+    if len(historial_df) >= 2:
+        st.subheader("Ticket promedio en el tiempo")
+        st.line_chart(historial_df.set_index('rango')['ticket_promedio'])
+        st.subheader("% Recurrencia (del período) en el tiempo")
+        st.line_chart(historial_df.set_index('rango')['pct_recurrencia_periodo'])
+    else:
+        st.caption("Guardá al menos 2 cortes para ver los gráficos de tendencia.")
+
+    st.caption(
+        "⚠️ Esto se guarda en un archivo local (historial_cortes.csv). "
+        "Si más adelante desplegás la app en Streamlit Cloud, ese archivo no "
+        "persiste entre reinicios — ahí conviene pasar a Google Sheets (Etapa 4)."
+    )
+
+with tab_productos:
+    st.subheader(f"Top productos por ingresos ({ventana['rango']})")
+    top_df = pd.DataFrame(ventana['top_productos'])
+    # preservar el orden de mayor a menor ingreso (evita que el grafico ordene alfabetico solo)
+    orden_productos = top_df['Nombre del producto'].tolist()
+    top_df['Nombre del producto'] = pd.Categorical(
+        top_df['Nombre del producto'], categories=orden_productos, ordered=True
+    )
+    top_df = top_df.set_index('Nombre del producto')
+    st.bar_chart(top_df['ingresos'])
+    st.dataframe(top_df, use_container_width=True)
+
+    st.subheader("Segmentación por método de pago (histórico completo)")
+    cuotas_df = pd.DataFrame(historico['segmentacion_cuotas']).T
+    st.dataframe(cuotas_df, use_container_width=True)
+
+with tab_hallazgos:
+    c1, c2 = st.columns(2)
+    c1.metric("% recurrencia histórica (todos los clientes)", f"{historico['pct_recurrentes']}%")
+    c2.metric(f"% de compradores de los últimos {dias_ventana} días que ya eran clientes", f"{recurrencia_periodo}%")
+
+    if dias_2da_compra['dias_promedio'] is not None:
+        st.metric(
+            "Días promedio hasta la 2da compra",
+            f"{dias_2da_compra['dias_promedio']} días",
+            help=f"Calculado sobre {dias_2da_compra['casos']} clientes que volvieron a comprar."
+        )
+
+    st.subheader("Recurrencia por segmento de método de pago")
+    st.dataframe(pd.DataFrame(historico['segmentacion_cuotas']).T, use_container_width=True)
+
+    st.subheader("Cancelaciones por medio de pago")
+    st.dataframe(pd.DataFrame(cancel_medio_pago), use_container_width=True)
+
+    st.subheader("Cancelaciones por provincia (solo transferencia/link de pago)")
+    st.dataframe(pd.DataFrame(cancel_provincia), use_container_width=True)
+
+    st.subheader("Stock parado en productos que nunca vendieron")
+    sm1, sm2 = st.columns(2)
+    sm1.metric("Total en productos sin ninguna venta", f"${stock_muerto['total_valor']:,.0f}")
+    sm2.metric("De eso, solo por estar ocultos de la tienda", f"${stock_muerto['valor_oculto']:,.0f}")
+    if stock_muerto['productos_ocultos']:
+        st.caption("Arreglo gratis (activar \"Mostrar en tienda\"):")
+        st.dataframe(pd.DataFrame(stock_muerto['productos_ocultos']), use_container_width=True)
+    if stock_muerto['productos_visibles_sin_ventas']:
+        st.caption("Visibles hace tiempo y aun así sin ventas (requieren revisión real):")
+        st.dataframe(pd.DataFrame(stock_muerto['productos_visibles_sin_ventas']), use_container_width=True)
+
+st.divider()
+st.caption("Datos: exports de Tiendanube. No incluye ventas de otros canales fuera de Tiendanube.")
