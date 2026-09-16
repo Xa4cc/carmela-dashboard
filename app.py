@@ -180,6 +180,23 @@ def delta_pp(actual, anterior):
     """Delta en puntos porcentuales, para metricas que ya son un %."""
     return f"{actual-anterior:+.1f} pp"
 
+
+# Traduccion de nombres de columna internos a etiquetas legibles para mostrar en pantalla
+ETIQUETAS_COLUMNAS = {
+    'nombre_producto': 'Producto', 'stock_total': 'Stock', 'venta_diaria': 'Venta diaria',
+    'dias_de_stock': 'Días de stock', 'valor_stock': 'Valor en stock',
+    'clientes': 'Clientes', 'ingresos': 'Ingresos', 'pct_ingresos': '% de ingresos',
+    'ticket_promedio': 'Ticket promedio', 'pct_recurrentes': '% recurrentes',
+    'pedidos_totales': 'Pedidos totales', 'pedidos': 'Pedidos', 'cancelados': 'Cancelados',
+    'pct_cancelacion': '% cancelación',
+}
+
+
+def con_etiquetas(df):
+    """Renombra las columnas de un DataFrame usando ETIQUETAS_COLUMNAS (deja igual
+    las que no esten en el diccionario, ej. nombres propios como 'Medio de pago')."""
+    return df.rename(columns=ETIQUETAS_COLUMNAS)
+
 # ---------- Tabs ----------
 tab_resumen, tab_tendencia, tab_productos, tab_canales, tab_margen, tab_forecast, tab_hallazgos = st.tabs(
     ["📊 Resumen del mes", "📈 Tendencia", "🛍️ Productos", "🔀 Canales", "💰 Margen", "🔮 Forecast", "🔍 Hallazgos clave"]
@@ -250,7 +267,7 @@ with tab_resumen:
     st.divider()
     st.subheader("Riesgo de quiebre de stock (Tiendanube)")
     if riesgo:
-        st.dataframe(pd.DataFrame(riesgo), use_container_width=True)
+        st.dataframe(con_etiquetas(pd.DataFrame(riesgo)), use_container_width=True)
     else:
         st.write("No hay productos con stock bajo y venta activa en esta ventana.")
 
@@ -304,8 +321,9 @@ with tab_productos:
     st.dataframe(top_df, use_container_width=True)
 
     st.subheader("Segmentación por método de pago (histórico completo)")
-    cuotas_df = pd.DataFrame(historico['segmentacion_cuotas']).T
+    cuotas_df = con_etiquetas(pd.DataFrame(historico['segmentacion_cuotas']).T)
     st.dataframe(cuotas_df, use_container_width=True)
+    st.caption("\"Mezcla\" da 100% de recurrentes porque, por definición, quien está en ese grupo ya hizo más de una compra (una con cuotas y otra sin).")
 
 with tab_canales:
     if canal_ml is None:
@@ -416,13 +434,14 @@ with tab_hallazgos:
         )
 
     st.subheader("Recurrencia por segmento de método de pago")
-    st.dataframe(pd.DataFrame(historico['segmentacion_cuotas']).T, use_container_width=True)
+    st.dataframe(con_etiquetas(pd.DataFrame(historico['segmentacion_cuotas']).T), use_container_width=True)
+    st.caption("\"Mezcla\" da 100% de recurrentes porque, por definición, quien está en ese grupo ya hizo más de una compra (una con cuotas y otra sin).")
 
     st.subheader("Cancelaciones por medio de pago")
-    st.dataframe(pd.DataFrame(cancel_medio_pago), use_container_width=True)
+    st.dataframe(con_etiquetas(pd.DataFrame(cancel_medio_pago)), use_container_width=True)
 
     st.subheader("Cancelaciones por provincia (solo transferencia/link de pago)")
-    st.dataframe(pd.DataFrame(cancel_provincia), use_container_width=True)
+    st.dataframe(con_etiquetas(pd.DataFrame(cancel_provincia)), use_container_width=True)
 
     st.subheader("Stock parado en productos que nunca vendieron")
     sm1, sm2 = st.columns(2)
@@ -430,10 +449,10 @@ with tab_hallazgos:
     sm2.metric("De eso, solo por estar ocultos de la tienda", f"${stock_muerto['valor_oculto']:,.0f}")
     if stock_muerto['productos_ocultos']:
         st.caption("Arreglo gratis (activar \"Mostrar en tienda\"):")
-        st.dataframe(pd.DataFrame(stock_muerto['productos_ocultos']), use_container_width=True)
+        st.dataframe(con_etiquetas(pd.DataFrame(stock_muerto['productos_ocultos'])), use_container_width=True)
     if stock_muerto['productos_visibles_sin_ventas']:
         st.caption("Visibles hace tiempo y aun así sin ventas (requieren revisión real):")
-        st.dataframe(pd.DataFrame(stock_muerto['productos_visibles_sin_ventas']), use_container_width=True)
+        st.dataframe(con_etiquetas(pd.DataFrame(stock_muerto['productos_visibles_sin_ventas'])), use_container_width=True)
 
 st.divider()
 st.caption("Datos: exports de Tiendanube. No incluye ventas de otros canales fuera de Tiendanube.")
