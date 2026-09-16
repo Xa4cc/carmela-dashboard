@@ -14,6 +14,7 @@ share.streamlit.io conectando un repo de GitHub, para tener un
 link publico en vez de correrlo en tu compu.
 """
 import os
+import time
 import pandas as pd
 import streamlit as st
 
@@ -41,14 +42,28 @@ HISTORIAL_PATH = "historial_cortes.csv"
 st.set_page_config(page_title="Dashboard Carmela Güemes", page_icon="👜", layout="wide")
 
 
+MAX_INTENTOS = 5
+
+
 def chequear_password():
     """Muestra un campo de contraseña y frena la app hasta que sea correcta.
     La contraseña real vive en Secrets (nunca en el código), asi que no queda
-    expuesta aunque el repo de GitHub sea público."""
+    expuesta aunque el repo de GitHub sea público. Incluye un limite de
+    intentos fallidos (con demora creciente) para dificultar la fuerza bruta."""
     if st.session_state.get("autenticado"):
         return True
 
+    st.session_state.setdefault("intentos_fallidos", 0)
+
     st.title("👜 Dashboard Carmela Güemes")
+
+    if st.session_state["intentos_fallidos"] >= MAX_INTENTOS:
+        st.error(
+            f"Demasiados intentos fallidos ({MAX_INTENTOS}). "
+            "Cerrá esta pestaña y volvé a abrir el link para reintentar."
+        )
+        st.stop()
+
     st.caption("Ingresá la contraseña para ver el dashboard.")
     clave = st.text_input("Contraseña", type="password")
 
@@ -67,9 +82,20 @@ def chequear_password():
 
     if clave == esperada:
         st.session_state["autenticado"] = True
+        st.session_state["intentos_fallidos"] = 0
         st.rerun()
     else:
-        st.error("Contraseña incorrecta.")
+        st.session_state["intentos_fallidos"] += 1
+        restantes = MAX_INTENTOS - st.session_state["intentos_fallidos"]
+        time.sleep(min(2 * st.session_state["intentos_fallidos"], 10))  # demora creciente, tope 10s
+        if restantes > 0:
+            st.error(f"Contraseña incorrecta. Te quedan {restantes} intento(s).")
+        else:
+            st.error(
+                f"Demasiados intentos fallidos ({MAX_INTENTOS}). "
+                "Cerrá esta pestaña y volvé a abrir el link para reintentar."
+            )
+        st.stop()
         st.stop()
 
 
